@@ -43,11 +43,12 @@
 #define State_1  0
 #define State_2  1
 #define State_3	 2
+#define State_4	 3
 
 #define Not_yet   0
 #define Full		 1
 
-#define Station_ID 	  	1000
+#define Station_ID 	  	2000
 #define Waiting 				6000
 #define Charge_Start 		6001
 #define Charging 	    	6002
@@ -59,6 +60,7 @@
 #define Charge_full					7003
 #define Charge_prepare			7004
 #define Charge_reset				7005
+#define Charge_unknown			7006
 
 #define Charge_Enable HAL_GPIO_WritePin(GPIOB,Charge_Pin,GPIO_PIN_SET);
 #define Charge_Disable HAL_GPIO_WritePin(GPIOB,Charge_Pin,GPIO_PIN_RESET);
@@ -72,6 +74,12 @@
 #define Buzzer_On HAL_GPIO_WritePin(GPIOB,Buzzer_Pin,GPIO_PIN_SET);
 #define Buzzer_Off HAL_GPIO_WritePin(GPIOB,Buzzer_Pin,GPIO_PIN_RESET);
 
+#define THERMISTORNOMINAL 10000 
+#define TEMPERATURENOMINAL 25 
+#define NUMSAMPLES 5
+#define BCOEFFICIENT 3950
+#define SERIESRESISTOR 10000 
+uint16_t samples[NUMSAMPLES];
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
@@ -105,7 +113,8 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
                                 
 void get_data(void);
 void battery_indicator(void);
-
+void error_blink(int i);
+void Operator_blink();
 /*------------ Timer delay -------------*/
 void delay_us(uint16_t microseconds);
 
@@ -121,8 +130,10 @@ int adc1_value_temp = 0;
 float adc1_value_batt = 0;
 float NTC_value = 0;
 float min_diff = 1000;
+float batt_temp ;
 
 //-20 => 105
+/*
 float Temp_lookup_table[126] = {\
 		 70.5811, 67.2987, 64.1834, 61.2233, 58.4080, 55.7284, 53.1766, 50.7456, 48.4294, 46.2224, 44.1201, 42.1180, 40.2121\
 		,38.3988, 36.6746, 35.0362, 33.4802, 32.0035, 30.6028, 29.2750, 28.0170, 26.8255, 25.6972, 24.6290, 23.6176, 22.6597\
@@ -134,7 +145,7 @@ float Temp_lookup_table[126] = {\
     ,2.0661,  2.0004,  1.9378,  1.8785,  1.8225,  1.7696,  1.7197,  1.6727,  1.6282,  1.5860,  1.5458,  1.5075,  1.4707\
 	  ,1.4352,  1.4006,  1.3669,  1.3337,  1.3009,  1.2684,  1.2360,  1.2037,  1.1714,  1.1390,  1.1067,  1.0744,  1.0422\
     ,1.0104,  0.9789,  0.9481,  0.9180,  0.8889,  0.85,    0.8346,  0.8099,  0.7870};
-
+*/
 //UART WIFI
 //================================================================================//
 uint8_t buffer[100],receive_data[6];
@@ -147,6 +158,50 @@ uint8_t data_reorder[6];
 //WORKFLOW
 //================================================================================//
 uint8_t workflow = 0, lms_ = 1, wait_motor = 0, charge_complete = 0;
+
+double temp_calculate(int adc)
+{
+
+    double Temp;
+
+    double ara;        //(10000*((4096/(adc-1))));
+
+    ara=adc-1;
+
+    ara=4096/ara;
+
+    ara=ara*10000;
+
+    Temp = log(ara);
+   //         =log(10000/(4095/adc-1)) // for pull-up configuration
+
+
+    Temp=pow(Temp,2);
+
+
+    Temp=Temp*0.0000000876741;
+
+    Temp=Temp+0.000234125;
+
+    Temp=Temp*(log(ara));
+
+    Temp=Temp+0.001129148;
+
+    Temp=(1/Temp);
+
+    //Temp = log(10000.0*((1024.0/RawADC-1)))
+    //Temp = 1 / (0.001129148 + (0.000234125 + (0.0000000876741 * Temp * Temp ))* Temp )
+
+
+    Temp = Temp - 273.15;            // Convert Kelvin to Celcius
+
+    // Temp = (Temp * 9.0)/ 5.0 + 32.0; // Convert Celcius to Fahrenheit
+
+    return Temp;
+
+
+}
+
 
 int main(void)
 {
@@ -171,7 +226,7 @@ int main(void)
 	HAL_TIM_Base_Start(&htim4);
   HAL_TIM_Base_Start_IT(&htim3);
 	//---Battery LED---
-	HAL_GPIO_WritePin(GPIOB,Batt_lvl_1_Pin,GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOB,Batt_lvl_1_Pin,GPIO_PIN_SET	);
 	HAL_GPIO_WritePin(GPIOB,Batt_lvl_2_Pin,GPIO_PIN_SET);
 	HAL_GPIO_WritePin(GPIOB,Batt_lvl_3_Pin,GPIO_PIN_SET);
 	HAL_GPIO_WritePin(GPIOB,Batt_lvl_4_Pin,GPIO_PIN_SET);
@@ -232,7 +287,7 @@ int main(void)
 			data_complete = 0;
 			//charge_complete = 0;
 			Error_Off;
-			Operator_On;
+			Operator_Off;
 		}
 		//Response to server while starting to charge
 		else if ((data_complete == 1)&&(data_id == Charge_Start)&&(workflow == State_1)){
@@ -246,20 +301,45 @@ int main(void)
 			while(wait_motor <= 100){
 				delay_us(50000);
 				wait_motor++;
+				Error_Off;
+				Operator_On;
 			}
 			
-			if (HAL_GPIO_ReadPin(GPIOB,Charge_LMS_Pin) == 1){
+			if (HAL_GPIO_ReadPin(GPIOB,Charge_LMS_Pin) == 1 ){
 				lms_ = 1;
 				workflow = State_3;
 				Error_On;
 				Operator_Off;
 			}
 			else if (HAL_GPIO_ReadPin(GPIOB,Charge_LMS_Pin) == 0){
-				lms_ = 0;
-				workflow = State_2;
-				Charge_Enable;
-				Error_Off;
-			  Operator_On;
+				int temp_wait = 0;
+				while(wait_motor <= 60){
+				delay_us(50000);
+				temp_wait++;
+				}
+				if (adc1_value_batt >=2){
+					lms_ = 1;
+					Operator_Off;
+					//Error_On;
+					error_blink(10);
+					workflow = State_4;
+					/*
+					Motor_Backward();
+					wait_motor = 0;
+					while(wait_motor <= 100){
+						delay_us(50000);
+						wait_motor++;
+					}
+					*/
+					
+				}
+				else{
+					lms_ = 0;
+					workflow = State_2;
+					Charge_Enable;
+					Error_Off;
+					Operator_On;
+				}
 			}
 			
 			Motor_Off();
@@ -274,6 +354,20 @@ int main(void)
 			HAL_UART_Transmit_IT(&huart1,buffer, sizeof buffer);
 			for (int i=0; i<len; i++) receive_data[i] = '\0';
 			data_complete = 0;
+			data_id = Reset_Workflow;
+		}
+		// error when no robot to charge
+		else if (workflow == State_4){
+			Charge_Disable;
+			Motor_Backward();
+			while(wait_motor <= 100){
+				delay_us(50000);
+				wait_motor++;
+			}
+			data_complete = 0;
+			workflow = State_1;
+			Error_Off;
+			Operator_Off;
 		}
 		//Response to server while charging
 		else if ((data_complete == 1)&&(data_id == Charging)&&(workflow == State_2)){
@@ -286,7 +380,7 @@ int main(void)
 			data_complete = 0;
 		}
 		//Reset charge station workflow
-		else if ((data_complete == 1)&&(data_id == Reset_Workflow)&&(workflow != State_1)){
+		else if ((data_complete == 1)&&(data_id == Reset_Workflow)){
 			snprintf((char*)buffer, sizeof buffer\
 				,"%s%d%s%d%s%d%s%.1f%s"\
 				,"{\"id\":",Station_ID,",\"status\":",Charge_reset,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
@@ -301,7 +395,24 @@ int main(void)
 			data_complete = 0;
 			workflow = State_1;
 			Error_Off;
-			Operator_On;
+			Operator_Off;
+		}
+		
+		else if ((data_complete == 1)&&(data_id != Reset_Workflow)) {
+			snprintf((char*)buffer, sizeof buffer\
+
+				,"%s%d%s%d%s%d%s%.1f%s"\
+
+				,"{\"id\":",Station_ID,",\"status\":",Charge_unknown,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
+
+			
+
+			HAL_UART_Transmit_IT(&huart1,buffer, sizeof buffer);
+
+			for (int i=0; i<len; i++) receive_data[i] = '\0';
+
+			data_complete = 0;
+
 		}
 
 		//Full condition
@@ -321,19 +432,23 @@ int main(void)
 				delay_us(50000);
 				wait_motor++;
 			}
+			Error_On;
+			Operator_Off;
 		}
 		
 		//while charging show battery lvl
 		if (workflow == State_2)
 			battery_indicator();
 		else if(workflow != State_2){
-			HAL_GPIO_WritePin(GPIOB,Batt_lvl_1_Pin,GPIO_PIN_SET);
-			HAL_GPIO_WritePin(GPIOB,Batt_lvl_2_Pin,GPIO_PIN_SET);
-			HAL_GPIO_WritePin(GPIOB,Batt_lvl_3_Pin,GPIO_PIN_SET);
-			HAL_GPIO_WritePin(GPIOB,Batt_lvl_4_Pin,GPIO_PIN_SET);
-			HAL_GPIO_WritePin(GPIOB,Batt_lvl_5_Pin,GPIO_PIN_SET);
-		}
-			
+			if(workflow == State_1){
+				Operator_blink();
+			}
+				HAL_GPIO_WritePin(GPIOB,Batt_lvl_1_Pin,GPIO_PIN_SET);
+				HAL_GPIO_WritePin(GPIOB,Batt_lvl_2_Pin,GPIO_PIN_SET);
+				HAL_GPIO_WritePin(GPIOB,Batt_lvl_3_Pin,GPIO_PIN_SET);
+				HAL_GPIO_WritePin(GPIOB,Batt_lvl_4_Pin,GPIO_PIN_SET);
+				HAL_GPIO_WritePin(GPIOB,Batt_lvl_5_Pin,GPIO_PIN_SET);
+		}			
   }
 }
 
@@ -344,9 +459,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if (htim->Instance==htim3.Instance)
 	{	
 		//Battery calc
-		adc1_value_batt = adc1_value[0]*0.007531f;
-		
+		//adc1_value_batt = adc1_value[0]*0.00764432f;
+		float adc1_batt_total = 0;
+		for (int i = 0;i<16;i++)
+		{
+			 adc1_batt_total += adc1_value[0];
+			 delay_us(100);
+		}
+		batt_temp += ((adc1_batt_total/16) - batt_temp)*0.1;
+		adc1_value_batt = batt_temp*0.007722649f;//charge_1:ID:1000:0.00764432f//charge_2:ID:2000:0.007722649f//charge_3:ID:3000:0.007645756633f
 		//Temp of charge station
+		/*
 		NTC_value = (10.89 * adc1_value[1])/(13513.5 - (3.3 * adc1_value[1]));
 		min_diff = 1000;
 		for (int i = 0; i<126; i++){
@@ -355,9 +478,52 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 				adc1_value_temp = i - 20;
 			}
 		}
+		
+		uint8_t i;
+		float average;
+ 
+		// take N samples in a row, with a slight delay
+		for (i=0; i< NUMSAMPLES; i++) {
+		samples[i] = adc1_value[1];
+		}
+ 
+		// average all the samples out
+		average = 0;
+		for (i=0; i< NUMSAMPLES; i++) {
+			average += samples[i];
+		}
+		average /= NUMSAMPLES;
+ 
+ 
+		// convert the value to resistance
+		average = 4095 / average - 1;
+		average = SERIESRESISTOR / average;
+
+		float steinhart;
+		steinhart = average / THERMISTORNOMINAL;     // (R/Ro)
+		steinhart = log(steinhart);                  // ln(R/Ro)
+		steinhart /= BCOEFFICIENT;                   // 1/B * ln(R/Ro)
+		steinhart += 1.0 / (TEMPERATURENOMINAL + 273.15); // + (1/To)
+		steinhart = 1.0 / steinhart;                 // Invert
+		steinhart -= 273.15;
+		adc1_value_temp = steinhart;
+		*/
+		adc1_value_temp = temp_calculate(adc1_value[1]);
 	}
 }
 
+
+void error_blink(int i){
+	for(int a = 0; a<i;a++)
+	{
+	HAL_GPIO_TogglePin(GPIOB,Error_Light_Pin);
+	HAL_Delay(500);
+	}
+}
+void Operator_blink(){
+	HAL_GPIO_TogglePin(GPIOB,Operator_Light_Pin);
+	HAL_Delay(500);
+}
 void battery_indicator(void){
 	//adc1_value_batt = adc1_value[0]*0.007531f;
 
