@@ -48,7 +48,7 @@
 #define Not_yet   0
 #define Full		 1
 
-#define Station_ID 	  	2000
+#define Station_ID 	  	3000
 #define Waiting 				6000
 #define Charge_Start 		6001
 #define Charging 	    	6002
@@ -131,7 +131,9 @@ float adc1_value_batt = 0;
 float NTC_value = 0;
 float min_diff = 1000;
 float batt_temp ;
-
+int count = 0;
+int bat_full_flag = 0;
+int flag = 0;
 //-20 => 105
 /*
 float Temp_lookup_table[126] = {\
@@ -276,7 +278,27 @@ int main(void)
 						Error_On;
 						Operator_Off;
 		}
-		
+		if (adc1_value_batt <=2){
+			count +=1;
+			if (count >= 50){
+						snprintf((char*)buffer, sizeof buffer\
+				,"%s%d%s%d%s%d%s%.1f%s"\
+				,"{\"id\":",Station_ID,",\"status\":",Charge_reset,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
+			HAL_UART_Transmit_IT(&huart1,buffer, sizeof buffer);
+			Charge_Disable;
+			Motor_Backward();
+			while(wait_motor <= 100){
+				delay_us(50000);
+				wait_motor++;
+			}
+			for (int i=0; i<len; i++) receive_data[i] = '\0';
+			data_complete = 0;
+			workflow = State_1;
+			Error_Off;
+			Operator_Off;
+			count = 0;
+		}
+	}
 		//Response to server while waiting
 		if ((data_complete == 1)&&(data_id == Waiting)&&(workflow == State_1)){
 			snprintf((char*)buffer, sizeof buffer\
@@ -288,6 +310,7 @@ int main(void)
 			//charge_complete = 0;
 			Error_Off;
 			Operator_Off;
+			count = 0;
 		}
 		//Response to server while starting to charge
 		else if ((data_complete == 1)&&(data_id == Charge_Start)&&(workflow == State_1)){
@@ -310,6 +333,7 @@ int main(void)
 				workflow = State_3;
 				Error_On;
 				Operator_Off;
+				count = 0;
 			}
 			else if (HAL_GPIO_ReadPin(GPIOB,Charge_LMS_Pin) == 0){
 				int temp_wait = 0;
@@ -317,12 +341,13 @@ int main(void)
 				delay_us(50000);
 				temp_wait++;
 				}
-				if (adc1_value_batt >=2){
+				if (adc1_value_batt <=2){
 					lms_ = 1;
 					Operator_Off;
 					//Error_On;
 					error_blink(10);
 					workflow = State_4;
+					count = 0;
 					/*
 					Motor_Backward();
 					wait_motor = 0;
@@ -339,6 +364,7 @@ int main(void)
 					Charge_Enable;
 					Error_Off;
 					Operator_On;
+					count = 0;
 				}
 			}
 			
@@ -371,6 +397,8 @@ int main(void)
 		}
 		//Response to server while charging
 		else if ((data_complete == 1)&&(data_id == Charging)&&(workflow == State_2)){
+			flag = 0;
+			if ((adc1_value_batt < 29.0)&&(flag == 0)){
 				snprintf((char*)buffer, sizeof buffer\
 				,"%s%d%s%d%s%d%s%.1f%s"\
 				,"{\"id\":",Station_ID,",\"status\":",Charge_charging,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
@@ -378,6 +406,20 @@ int main(void)
 			HAL_UART_Transmit_IT(&huart1,buffer, sizeof buffer);
 			for (int i=0; i<len; i++) receive_data[i] = '\0';
 			data_complete = 0;
+			bat_full_flag = 0;
+			flag = 1;
+		}
+			else{
+				snprintf((char*)buffer, sizeof buffer\
+				,"%s%d%s%d%s%d%s%.1f%s"\
+				,"{\"id\":",Station_ID,",\"status\":",Charge_charging,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
+			
+			HAL_UART_Transmit_IT(&huart1,buffer, sizeof buffer);
+			for (int i=0; i<len; i++) receive_data[i] = '\0';
+			data_complete = 0;
+			bat_full_flag +=1;	
+			flag = 1;
+			}
 		}
 		//Reset charge station workflow
 		else if ((data_complete == 1)&&(data_id == Reset_Workflow)){
@@ -416,7 +458,7 @@ int main(void)
 		}
 
 		//Full condition
-		if ((workflow == State_2)&&(adc1_value_batt >= 29.3)){
+		if ((workflow == State_2)&&(bat_full_flag >= 6)){
 			Charge_Disable;		
 			snprintf((char*)buffer, sizeof buffer\
 				,"%s%d%s%d%s%d%s%.1f%s"\
@@ -432,9 +474,11 @@ int main(void)
 				delay_us(50000);
 				wait_motor++;
 			}
-			Error_On;
-			Operator_Off;
-		}
+			Error_Off;
+			Operator_On;
+			count = 0;
+			bat_full_flag = 0;
+	}
 		
 		//while charging show battery lvl
 		if (workflow == State_2)
@@ -467,7 +511,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 			 delay_us(100);
 		}
 		batt_temp += ((adc1_batt_total/16) - batt_temp)*0.1;
-		adc1_value_batt = batt_temp*0.007722649f;//charge_1:ID:1000:0.00764432f//charge_2:ID:2000:0.007722649f//charge_3:ID:3000:0.007645756633f
+		adc1_value_batt = batt_temp*0.007645756633f;//charge_1:ID:1000:0.00764432f//charge_2:ID:2000:0.0076330722787276f//charge_3:ID:3000:0.007645756633f
 		//Temp of charge station
 		/*
 		NTC_value = (10.89 * adc1_value[1])/(13513.5 - (3.3 * adc1_value[1]));

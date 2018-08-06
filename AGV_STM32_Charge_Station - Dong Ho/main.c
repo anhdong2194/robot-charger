@@ -131,7 +131,7 @@ float adc1_value_batt = 0;
 float NTC_value = 0;
 float min_diff = 1000;
 float batt_temp ;
-
+int count = 0;
 //-20 => 105
 /*
 float Temp_lookup_table[126] = {\
@@ -259,7 +259,7 @@ int main(void)
 		get_data();
 		
 		//Auto restart if temp too high
-		if (adc1_value_temp >= 90){
+		if (adc1_value_temp >= 90 ){
 						snprintf((char*)buffer, sizeof buffer\
 						,"%s%d%s%d%s%d%s%.1f%s"\
 						,"{\"id\":",Station_ID,",\"status\":",Charge_reset,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
@@ -276,6 +276,27 @@ int main(void)
 						Error_On;
 						Operator_Off;
 		}
+		if (adc1_value_batt <=2 ){
+			count += 1;
+			if (count >= 100){
+						snprintf((char*)buffer, sizeof buffer\
+						,"%s%d%s%d%s%d%s%.1f%s"\
+						,"{\"id\":",Station_ID,",\"status\":",Charge_reset,",\"temp\":",adc1_value_temp,",\"batt\":",adc1_value_batt,"}\n");//r
+						HAL_UART_Transmit_IT(&huart1,buffer, sizeof buffer);
+						Charge_Disable;
+						Motor_Backward();
+						while(wait_motor <= 100){
+							delay_us(50000);
+							wait_motor++;
+						}
+						for (int i=0; i<len; i++) receive_data[i] = '\0';
+						data_complete = 0;
+						workflow = State_1;
+						Error_On;
+						Operator_Off;
+						count = 0
+		}
+	}
 		
 		//Response to server while waiting
 		if ((data_complete == 1)&&(data_id == Waiting)&&(workflow == State_1)){
@@ -317,7 +338,7 @@ int main(void)
 				delay_us(50000);
 				temp_wait++;
 				}
-				if (adc1_value_batt >=2){
+				if (adc1_value_batt <=2){
 					lms_ = 1;
 					Operator_Off;
 					//Error_On;
